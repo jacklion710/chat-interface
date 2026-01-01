@@ -1,0 +1,123 @@
+<div class="flex flex-col h-screen bg-gray-50 dark:bg-gray-900">
+  <header class="border-b border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-800 px-4 py-3">
+    <div class="flex items-center justify-between max-w-4xl mx-auto">
+      <h1 class="text-lg font-semibold text-gray-900 dark:text-white">Chat</h1>
+      @if (messages().length > 0) {
+        <button
+          (click)="clearChat()"
+          class="px-3 py-1.5 text-sm text-gray-600 dark:text-gray-400 hover:text-gray-900 dark:hover:text-gray-200 border border-gray-300 dark:border-gray-600 rounded-md hover:bg-gray-50 dark:hover:bg-gray-700 transition-colors"
+        >
+          Clear Chat
+        </button>
+      }
+    </div>
+  </header>
+
+  <div class="flex-1 overflow-y-auto chat-messages px-4 py-6">
+    <div class="max-w-3xl mx-auto space-y-6">
+      @if (messages().length === 0) {
+        <div class="flex flex-col items-center justify-center h-full text-center py-12">
+          <div class="mb-4">
+            <svg class="w-12 h-12 text-gray-400 dark:text-gray-500" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+              <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M8 12h.01M12 12h.01M16 12h.01M21 12c0 4.418-4.03 8-9 8a9.863 9.863 0 01-4.255-.949L3 20l1.395-3.72C3.512 15.042 3 13.574 3 12c0-4.418 4.03-8 9-8s9 3.582 9 8z"></path>
+            </svg>
+          </div>
+          <h2 class="text-xl font-semibold text-gray-900 dark:text-white mb-2">How can I help you today?</h2>
+          <p class="text-gray-500 dark:text-gray-400">Start a conversation by typing a message below.</p>
+        </div>
+      }
+
+      @for (message of messages(); track $index) {
+        <div class="flex gap-4" [class.flex-row-reverse]="message.role === 'user'">
+          <div class="shrink-0">
+            @if (message.role === 'user') {
+              <div class="w-8 h-8 rounded-full bg-gray-200 dark:bg-gray-700 flex items-center justify-center">
+                <svg class="w-5 h-5 text-gray-600 dark:text-gray-300" fill="currentColor" viewBox="0 0 20 20">
+                  <path fill-rule="evenodd" d="M10 9a3 3 0 100-6 3 3 0 000 6zm-7 9a7 7 0 1114 0H3z" clip-rule="evenodd"></path>
+                </svg>
+              </div>
+            } @else {
+              <div class="w-8 h-8 rounded-full bg-green-500 flex items-center justify-center">
+                <svg class="w-5 h-5 text-white" fill="currentColor" viewBox="0 0 20 20">
+                  <path d="M9.049 2.927c.3-.921 1.603-.921 1.902 0l1.07 3.292a1 1 0 00.95.69h3.462c.969 0 1.371 1.24.588 1.81l-2.8 2.034a1 1 0 00-.364 1.118l1.07 3.292c.3.921-.755 1.688-1.54 1.118l-2.8-2.034a1 1 0 00-1.175 0l-2.8 2.034c-.784.57-1.838-.197-1.539-1.118l1.07-3.292a1 1 0 00-.364-1.118L2.98 8.72c-.783-.57-.38-1.81.588-1.81h3.461a1 1 0 00.951-.69l1.07-3.292z"></path>
+                </svg>
+              </div>
+            }
+          </div>
+          <div class="flex-1" [class.text-right]="message.role === 'user'">
+            <div
+              class="inline-block max-w-[85%] rounded-2xl px-4 py-3"
+              [class.bg-white]="message.role === 'user'"
+              [class.dark:bg-gray-800]="message.role === 'user'"
+              [class.bg-gray-100]="message.role === 'assistant'"
+              [class.dark:bg-gray-800]="message.role === 'assistant'"
+              [class.text-gray-900]="message.role === 'user'"
+              [class.dark:text-white]="message.role === 'user'"
+              [class.text-gray-800]="message.role === 'assistant'"
+              [class.dark:text-gray-100]="message.role === 'assistant'"
+              [class.shadow-sm]="message.role === 'user'"
+            >
+              <div class="whitespace-pre-wrap wrap-break-word">{{ message.content }}</div>
+            </div>
+          </div>
+        </div>
+      }
+
+      @if (isLoading()) {
+        <div class="flex gap-4">
+          <div class="shrink-0">
+            <div class="w-8 h-8 rounded-full bg-green-500 flex items-center justify-center">
+              <svg class="w-5 h-5 text-white" fill="currentColor" viewBox="0 0 20 20">
+                <path d="M9.049 2.927c.3-.921 1.603-.921 1.902 0l1.07 3.292a1 1 0 00.95.69h3.462c.969 0 1.371 1.24.588 1.81l-2.8 2.034a1 1 0 00-.364 1.118l1.07 3.292c.3.921-.755 1.688-1.54 1.118l-2.8-2.034a1 1 0 00-1.175 0l-2.8 2.034c-.784.57-1.838-.197-1.539-1.118l1.07-3.292a1 1 0 00-.364-1.118L2.98 8.72c-.783-.57-.38-1.81.588-1.81h3.461a1 1 0 00.951-.69l1.07-3.292z"></path>
+              </svg>
+            </div>
+          </div>
+          <div class="flex-1">
+            <div class="inline-block bg-gray-100 dark:bg-gray-800 rounded-2xl px-4 py-3">
+              <div class="flex gap-1">
+                <div class="w-2 h-2 bg-gray-400 rounded-full animate-bounce" style="animation-delay: 0ms"></div>
+                <div class="w-2 h-2 bg-gray-400 rounded-full animate-bounce" style="animation-delay: 150ms"></div>
+                <div class="w-2 h-2 bg-gray-400 rounded-full animate-bounce" style="animation-delay: 300ms"></div>
+              </div>
+            </div>
+          </div>
+        </div>
+      }
+
+      @if (error()) {
+        <div class="max-w-3xl mx-auto mt-4 p-3 bg-red-50 dark:bg-red-900/20 border border-red-200 dark:border-red-800 rounded-md">
+          <p class="text-sm text-red-800 dark:text-red-200">{{ error() }}</p>
+        </div>
+      }
+    </div>
+  </div>
+
+  <div class="border-t border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-800 px-4 py-4">
+    <div class="max-w-3xl mx-auto">
+      <form (submit)="$event.preventDefault(); sendMessage()" class="relative">
+        <textarea
+          [(ngModel)]="inputMessage"
+          [ngModelOptions]="{standalone: true}"
+          (keydown)="onKeyDown($event)"
+          (input)="onInput($event)"
+          [disabled]="isLoading()"
+          placeholder="Message..."
+          rows="1"
+          class="w-full px-4 py-3 pr-12 bg-gray-50 dark:bg-gray-700 border border-gray-300 dark:border-gray-600 rounded-2xl resize-none focus:outline-none focus:ring-2 focus:ring-green-500 dark:focus:ring-green-400 focus:border-transparent text-gray-900 dark:text-white placeholder-gray-500 dark:placeholder-gray-400"
+          style="min-height: 52px; max-height: 200px; overflow-y: auto;"
+        ></textarea>
+        <button
+          type="submit"
+          [disabled]="!inputMessage().trim() || isLoading()"
+          class="absolute right-2 bottom-2 p-2 rounded-lg bg-green-500 hover:bg-green-600 disabled:bg-gray-300 dark:disabled:bg-gray-600 disabled:cursor-not-allowed text-white transition-colors"
+          [class.opacity-50]="!inputMessage().trim() || isLoading()"
+        >
+          <svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 19l9 2-9-18-9 18 9-2zm0 0v-8"></path>
+          </svg>
+        </button>
+      </form>
+    </div>
+  </div>
+</div>
+

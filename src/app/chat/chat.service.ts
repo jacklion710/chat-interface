@@ -1,6 +1,6 @@
 import { Injectable, inject } from '@angular/core';
 import { HttpClient, HttpHeaders } from '@angular/common/http';
-import { Observable, firstValueFrom } from 'rxjs';
+import { firstValueFrom } from 'rxjs';
 import { Message } from './chat.component';
 
 interface OpenAIRequest {
@@ -21,14 +21,44 @@ interface OpenAIResponse {
   }>;
 }
 
+export interface VectorStoreOption {
+  id: string;
+  name?: string;
+}
+
 @Injectable({
   providedIn: 'root'
 })
 export class ChatService {
   private http = inject(HttpClient);
   private apiUrl = '/api/chat';
+  private assistantsChatUrl = '/api/assistants/chat';
+  private vectorStoresUrl = '/api/vector-stores';
 
-  async sendMessage(messages: Message[]): Promise<string> {
+  private selectedVectorStoreId: string | null = null;
+  private threadId: string | null = null;
+
+  setVectorStore(vectorStoreId: string | null) {
+    this.selectedVectorStoreId = vectorStoreId;
+    this.threadId = null;
+  }
+
+  getVectorStoreId(): string | null {
+    return this.selectedVectorStoreId;
+  }
+
+  resetThread() {
+    this.threadId = null;
+  }
+
+  async listVectorStores(): Promise<VectorStoreOption[]> {
+    const response = await firstValueFrom(
+      this.http.get<{ data: VectorStoreOption[] }>(this.vectorStoresUrl),
+    );
+    return response.data || [];
+  }
+
+  async sendMessage(userPrompt: string, messages: Message[]): Promise<string> {
     const requestBody: OpenAIRequest = {
       model: 'gpt-3.5-turbo',
       messages: messages.map(msg => ({
@@ -38,6 +68,19 @@ export class ChatService {
     };
 
     try {
+      const vectorStoreId = this.selectedVectorStoreId;
+      if (vectorStoreId) {
+        const response = await firstValueFrom(
+          this.http.post<{ reply: string; threadId: string }>(this.assistantsChatUrl, {
+            prompt: userPrompt,
+            vectorStoreId,
+            threadId: this.threadId,
+          }),
+        );
+        this.threadId = response.threadId;
+        return response.reply;
+      }
+
       const response = await firstValueFrom(
         this.http.post<OpenAIResponse>(this.apiUrl, requestBody, {
           headers: new HttpHeaders({

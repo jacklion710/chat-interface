@@ -1,7 +1,8 @@
-import { Component, signal, computed, effect } from '@angular/core';
+import { Component, signal, effect } from '@angular/core';
 import { CommonModule } from '@angular/common';
 import { FormsModule } from '@angular/forms';
 import { ChatService } from './chat.service';
+import { MarkdownPipe } from '../shared/markdown.pipe';
 
 export interface Message {
   role: 'user' | 'assistant';
@@ -12,7 +13,7 @@ export interface Message {
 @Component({
   selector: 'app-chat',
   standalone: true,
-  imports: [CommonModule, FormsModule],
+  imports: [CommonModule, FormsModule, MarkdownPipe],
   templateUrl: './chat.component.html',
   styleUrl: './chat.component.css'
 })
@@ -21,6 +22,8 @@ export class ChatComponent {
   inputMessage = signal('');
   isLoading = signal(false);
   error = signal<string | null>(null);
+  vectorStores = signal<Array<{ id: string; name?: string }>>([]);
+  selectedVectorStoreId = signal<string>(''); // '' means none
 
   constructor(private chatService: ChatService) {
     effect(() => {
@@ -28,6 +31,23 @@ export class ChatComponent {
         this.scrollToBottom();
       }
     });
+
+    this.loadVectorStores();
+  }
+
+  async loadVectorStores() {
+    try {
+      const stores = await this.chatService.listVectorStores();
+      this.vectorStores.set(stores);
+    } catch (err) {
+      console.error('Failed to load vector stores:', err);
+    }
+  }
+
+  onVectorStoreChange(value: string) {
+    this.selectedVectorStoreId.set(value);
+    this.chatService.setVectorStore(value ? value : null);
+    this.clearChat();
   }
 
   async sendMessage() {
@@ -48,7 +68,7 @@ export class ChatComponent {
     this.isLoading.set(true);
 
     try {
-      const response = await this.chatService.sendMessage(this.messages());
+      const response = await this.chatService.sendMessage(message, this.messages());
       
       const assistantMessage: Message = {
         role: 'assistant',

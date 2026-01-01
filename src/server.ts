@@ -24,6 +24,74 @@ type FileMeta = {
 
 const fileMetaCache = new Map<string, FileMeta>();
 
+type AssistantChatRequest = {
+  prompt: string;
+  vectorStoreId: string;
+  threadId?: string | null;
+};
+
+type AssistantChatResponse = {
+  reply: string;
+  threadId: string;
+};
+
+const assistantIdByVectorStoreId = new Map<string, string>();
+
+function sleepMs(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+async function getOrCreateAssistantForVectorStore(apiKey: string, vectorStoreId: string): Promise<string> {
+  const cached = assistantIdByVectorStoreId.get(vectorStoreId);
+  if (cached) {
+    return cached;
+  }
+
+  const createResponse = await fetch('https://api.openai.com/v1/assistants', {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+      Authorization: `Bearer ${apiKey}`,
+      ...openAIAssistantsBetaHeaders,
+    },
+    body: JSON.stringify({
+      name: `Vector Store Chat (${vectorStoreId})`,
+      model: 'gpt-4o-mini',
+      instructions:
+        'You are a helpful assistant. When a user asks questions, use file_search when relevant and cite facts from the available files. If the files do not contain the answer, say so.',
+      tools: [{ type: 'file_search' }],
+      tool_resources: {
+        file_search: {
+          vector_store_ids: [vectorStoreId],
+        },
+      },
+    }),
+  });
+
+  if (!createResponse.ok) {
+    const errorData = await createResponse.json().catch(() => ({ error: 'Unknown error' }));
+    throw new Error(`Failed to create assistant: ${JSON.stringify(errorData)}`);
+  }
+
+  const data = (await createResponse.json()) as { id: string };
+  assistantIdByVectorStoreId.set(vectorStoreId, data.id);
+  return data.id;
+}
+
+function extractAssistantText(message: any): string {
+  const content = message?.content;
+  if (!Array.isArray(content)) {
+    return '';
+  }
+  const parts: string[] = [];
+  for (const item of content) {
+    if (item?.type === 'text' && item?.text?.value) {
+      parts.push(String(item.text.value));
+    }
+  }
+  return parts.join('\n').trim();
+}
+
 function bufferToArrayBuffer(buffer: Buffer): ArrayBuffer {
   return buffer.buffer.slice(buffer.byteOffset, buffer.byteOffset + buffer.byteLength) as ArrayBuffer;
 }
@@ -92,6 +160,165 @@ app.post('/api/chat', async (req, res) => {
     console.error('Chat API error:', error);
     res.status(500).json({ 
       error: error instanceof Error ? error.message : 'Internal server error' 
+    });
+  }
+});
+
+app.post('/api/assistants/chat', async (req, res) => {
+  try {
+    const apiKey = process.env['OPENAI_API_KEY'];
+
+    if (!apiKey) {
+      res.status(500).json({ error: 'OpenAI API key not configured' });
+      return;
+    }
+
+    const body = req.body as AssistantChatRequest;
+    const prompt = typeof body?.prompt === 'string' ? body.prompt.trim() : '';
+    const vectorStoreId = typeof body?.vectorStoreId === 'string' ? body.vectorStoreId.trim() : '';
+
+    if (!prompt) {
+      res.status(400).json({ error: 'Missing prompt' });
+      return;
+    }
+    if (!vectorStoreId) {
+      res.status(400).json({ error: 'Missing vectorStoreId' });
+      return;
+    }
+
+    const assistantId = await getOrCreateAssistantForVectorStore(apiKey, vectorStoreId);
+
+    let threadId = typeof body?.threadId === 'string' ? body.threadId : '';
+    if (!threadId) {
+      const threadResponse = await fetch('https://api.openai.com/v1/threads', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          Authorization: `Bearer ${apiKey}`,
+          ...openAIAssistantsBetaHeaders,
+        },
+        body: JSON.stringify({}),
+      });
+
+      if (!threadResponse.ok) {
+        const errorData = await threadResponse.json().catch(() => ({ error: 'Unknown error' }));
+        res.status(threadResponse.status).json(errorData);
+        return;
+      }
+
+      const threadData = (await threadResponse.json()) as { id: string };
+      threadId = threadData.id;
+    }
+
+    const addMessageResponse = await fetch(`https://api.openai.com/v1/threads/${threadId}/messages`, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        Authorization: `Bearer ${apiKey}`,
+        ...openAIAssistantsBetaHeaders,
+      },
+      body: JSON.stringify({
+        role: 'user',
+        content: prompt,
+      }),
+    });
+
+    if (!addMessageResponse.ok) {
+      const errorData = await addMessageResponse.json().catch(() => ({ error: 'Unknown error' }));
+      res.status(addMessageResponse.status).json(errorData);
+      return;
+    }
+
+    const runResponse = await fetch(`https://api.openai.com/v1/threads/${threadId}/runs`, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        Authorization: `Bearer ${apiKey}`,
+        ...openAIAssistantsBetaHeaders,
+      },
+      body: JSON.stringify({
+        assistant_id: assistantId,
+      }),
+    });
+
+    if (!runResponse.ok) {
+      const errorData = await runResponse.json().catch(() => ({ error: 'Unknown error' }));
+      res.status(runResponse.status).json(errorData);
+      return;
+    }
+
+    const runData = (await runResponse.json()) as { id: string; status: string };
+    const runId = runData.id;
+
+    const maxWaitMs = 60_000;
+    const start = Date.now();
+
+    while (true) {
+      const statusResponse = await fetch(`https://api.openai.com/v1/threads/${threadId}/runs/${runId}`, {
+        method: 'GET',
+        headers: {
+          Authorization: `Bearer ${apiKey}`,
+          ...openAIAssistantsBetaHeaders,
+        },
+      });
+
+      if (!statusResponse.ok) {
+        const errorData = await statusResponse.json().catch(() => ({ error: 'Unknown error' }));
+        res.status(statusResponse.status).json(errorData);
+        return;
+      }
+
+      const statusData = (await statusResponse.json()) as { status: string; last_error?: any };
+      const status = statusData.status;
+
+      if (status === 'completed') {
+        break;
+      }
+
+      if (status === 'failed' || status === 'cancelled' || status === 'expired') {
+        res.status(500).json({ error: statusData.last_error?.message || `Run ${status}` });
+        return;
+      }
+
+      if (Date.now() - start > maxWaitMs) {
+        res.status(504).json({ error: 'Timed out waiting for assistant response' });
+        return;
+      }
+
+      await sleepMs(800);
+    }
+
+    const messagesResponse = await fetch(`https://api.openai.com/v1/threads/${threadId}/messages?order=desc&limit=20`, {
+      method: 'GET',
+      headers: {
+        Authorization: `Bearer ${apiKey}`,
+        ...openAIAssistantsBetaHeaders,
+      },
+    });
+
+    if (!messagesResponse.ok) {
+      const errorData = await messagesResponse.json().catch(() => ({ error: 'Unknown error' }));
+      res.status(messagesResponse.status).json(errorData);
+      return;
+    }
+
+    const messagesData = (await messagesResponse.json()) as { data: any[] };
+    const assistantMessage = Array.isArray(messagesData?.data)
+      ? messagesData.data.find((m) => m?.role === 'assistant')
+      : null;
+
+    const reply = extractAssistantText(assistantMessage);
+    if (!reply) {
+      res.status(500).json({ error: 'No assistant reply found' });
+      return;
+    }
+
+    const responseBody: AssistantChatResponse = { reply, threadId };
+    res.json(responseBody);
+  } catch (error) {
+    console.error('Assistants chat error:', error);
+    res.status(500).json({
+      error: error instanceof Error ? error.message : 'Internal server error',
     });
   }
 });

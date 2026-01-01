@@ -48,6 +48,9 @@ export class VectorStoresComponent implements OnDestroy {
   queuedFiles = signal<File[]>([]);
   isDragOver = signal(false);
   isPolling = signal(false);
+  isRenamingStore = signal(false);
+  isEditingStoreName = signal(false);
+  editedStoreName = signal('');
 
   private pollIntervalId: ReturnType<typeof setInterval> | null = null;
   private pollInFlight = false;
@@ -99,6 +102,8 @@ export class VectorStoresComponent implements OnDestroy {
 
   async selectStore(store: VectorStore) {
     this.selectedStore.set(store);
+    this.isEditingStoreName.set(false);
+    this.editedStoreName.set(store.name || '');
     await this.loadStoreFiles(store.id, true);
     this.startPollingIfNeeded();
   }
@@ -316,6 +321,44 @@ export class VectorStoresComponent implements OnDestroy {
       this.error.set(err instanceof Error ? err.message : 'Failed to delete vector store');
     } finally {
       this.isLoading.set(false);
+    }
+  }
+
+  startRename() {
+    const store = this.selectedStore();
+    if (!store) {
+      return;
+    }
+    this.isEditingStoreName.set(true);
+    this.editedStoreName.set(store.name || '');
+  }
+
+  cancelRename() {
+    const store = this.selectedStore();
+    this.isEditingStoreName.set(false);
+    this.editedStoreName.set(store?.name || '');
+  }
+
+  async saveRename() {
+    const store = this.selectedStore();
+    const name = this.editedStoreName().trim();
+    if (!store || !name || this.isRenamingStore()) {
+      return;
+    }
+
+    this.isRenamingStore.set(true);
+    this.error.set(null);
+    try {
+      const updated = await this.vectorStoresService.renameVectorStore(store.id, name);
+
+      this.vectorStores.update((stores) => stores.map((s) => (s.id === updated.id ? updated : s)));
+      this.selectedStore.set(updated);
+      this.isEditingStoreName.set(false);
+      this.editedStoreName.set(updated.name || '');
+    } catch (err) {
+      this.error.set(err instanceof Error ? err.message : 'Failed to rename vector store');
+    } finally {
+      this.isRenamingStore.set(false);
     }
   }
 

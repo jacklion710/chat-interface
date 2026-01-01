@@ -60,6 +60,23 @@ export class VectorStoresService {
     }
   }
 
+  async renameVectorStore(storeId: string, name: string): Promise<VectorStore> {
+    try {
+      const response = await firstValueFrom(
+        this.http.patch<VectorStore>(`${this.baseUrl}/${storeId}`, { name }),
+      );
+      return response;
+    } catch (error: any) {
+      console.error('Error renaming vector store:', error);
+      throw new Error(
+        error?.error?.error?.message ||
+          error?.error?.message ||
+          (typeof error?.error === 'string' ? error.error : '') ||
+          'Failed to rename vector store',
+      );
+    }
+  }
+
   async listStoreFiles(storeId: string): Promise<VectorStoreFile[]> {
     try {
       const response = await firstValueFrom(

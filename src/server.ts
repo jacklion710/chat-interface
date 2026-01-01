@@ -166,6 +166,47 @@ app.post('/api/vector-stores', async (req, res) => {
   }
 });
 
+app.patch('/api/vector-stores/:id', async (req, res) => {
+  try {
+    const apiKey = process.env['OPENAI_API_KEY'];
+
+    if (!apiKey) {
+      res.status(500).json({ error: 'OpenAI API key not configured' });
+      return;
+    }
+
+    const newName = typeof req.body?.name === 'string' ? req.body.name.trim() : '';
+    if (!newName) {
+      res.status(400).json({ error: 'Missing vector store name' });
+      return;
+    }
+
+    const response = await fetch(`https://api.openai.com/v1/vector_stores/${req.params['id']}`, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        Authorization: `Bearer ${apiKey}`,
+        ...openAIAssistantsBetaHeaders,
+      },
+      body: JSON.stringify({ name: newName }),
+    });
+
+    if (!response.ok) {
+      const errorData = await response.json().catch(() => ({ error: 'Unknown error' }));
+      res.status(response.status).json(errorData);
+      return;
+    }
+
+    const data = await response.json();
+    res.json(data);
+  } catch (error) {
+    console.error('Vector store rename error:', error);
+    res.status(500).json({
+      error: error instanceof Error ? error.message : 'Internal server error',
+    });
+  }
+});
+
 app.delete('/api/vector-stores/:id', async (req, res) => {
   try {
     const apiKey = process.env['OPENAI_API_KEY'];

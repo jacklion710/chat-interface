@@ -17,6 +17,44 @@ const openAIAssistantsBetaHeaders = {
   'OpenAI-Beta': 'assistants=v2',
 };
 
+type FileMeta = {
+  filename?: string;
+  bytes?: number;
+};
+
+const fileMetaCache = new Map<string, FileMeta>();
+
+function bufferToArrayBuffer(buffer: Buffer): ArrayBuffer {
+  return buffer.buffer.slice(buffer.byteOffset, buffer.byteOffset + buffer.byteLength) as ArrayBuffer;
+}
+
+async function getFileMeta(apiKey: string, fileId: string): Promise<FileMeta> {
+  const cached = fileMetaCache.get(fileId);
+  if (cached) {
+    return cached;
+  }
+
+  const response = await fetch(`https://api.openai.com/v1/files/${fileId}`, {
+    method: 'GET',
+    headers: {
+      Authorization: `Bearer ${apiKey}`,
+    },
+  });
+
+  if (!response.ok) {
+    const errorData = await response.json().catch(() => ({ error: 'Unknown error' }));
+    console.warn('File meta fetch failed', { fileId, status: response.status, errorData });
+    const fallback: FileMeta = {};
+    fileMetaCache.set(fileId, fallback);
+    return fallback;
+  }
+
+  const data = (await response.json()) as { filename?: string; bytes?: number };
+  const meta: FileMeta = { filename: data.filename, bytes: data.bytes };
+  fileMetaCache.set(fileId, meta);
+  return meta;
+}
+
 const browserDistFolder = join(import.meta.dirname, '../browser');
 
 const app = express();
@@ -185,7 +223,29 @@ app.get('/api/vector-stores/:id/files', async (req, res) => {
     }
 
     const data = await response.json();
-    res.json(data);
+    const items: Array<Record<string, unknown>> = Array.isArray(data?.data) ? data.data : [];
+
+    const enriched = await Promise.all(
+      items.map(async (item) => {
+        const maybeFileIdFromFileIdField = item['file_id'] as string | undefined;
+        const maybeIdField = item['id'] as string | undefined;
+        const fileId =
+          maybeFileIdFromFileIdField ??
+          (typeof maybeIdField === 'string' && maybeIdField.startsWith('file-') ? maybeIdField : '');
+
+        if (!fileId) {
+          return item;
+        }
+        const meta = await getFileMeta(apiKey, fileId);
+        return {
+          ...item,
+          filename: meta.filename,
+          bytes: meta.bytes,
+        };
+      }),
+    );
+
+    res.json({ ...data, data: enriched });
   } catch (error) {
     console.error('Vector store files list error:', error);
     res.status(500).json({ 
@@ -194,7 +254,7 @@ app.get('/api/vector-stores/:id/files', async (req, res) => {
   }
 });
 
-app.post('/api/vector-stores/:id/files', upload.single('file'), async (req, res) => {
+app.post('/api/vector-stores/:id/files', upload.array('files'), async (req, res) => {
   try {
     const apiKey = process.env['OPENAI_API_KEY'];
     
@@ -203,52 +263,66 @@ app.post('/api/vector-stores/:id/files', upload.single('file'), async (req, res)
       return;
     }
 
-    if (!req.file) {
-      res.status(400).json({ error: 'No file provided' });
+    const files = (req.files as Express.Multer.File[] | undefined) ?? [];
+    if (files.length === 0) {
+      res.status(400).json({ error: 'No files provided' });
       return;
     }
 
-    const formData = new FormData();
-    const fileBlob = new Blob([req.file.buffer as BlobPart], { type: req.file.mimetype });
-    formData.append('file', fileBlob, req.file.originalname);
-    formData.append('purpose', 'assistants');
+    const results: Array<Record<string, unknown>> = [];
 
-    const uploadResponse = await fetch('https://api.openai.com/v1/files', {
-      method: 'POST',
-      headers: {
-        'Authorization': `Bearer ${apiKey}`
-      },
-      body: formData
-    });
+    for (const file of files) {
+      const formData = new FormData();
+      const fileArrayBuffer = bufferToArrayBuffer(file.buffer);
+      const fileBlob = new Blob([fileArrayBuffer], { type: file.mimetype });
+      formData.append('file', fileBlob, file.originalname);
+      formData.append('purpose', 'assistants');
 
-    if (!uploadResponse.ok) {
-      const errorData = await uploadResponse.json().catch(() => ({ error: 'Unknown error' }));
-      res.status(uploadResponse.status).json(errorData);
-      return;
+      const uploadResponse = await fetch('https://api.openai.com/v1/files', {
+        method: 'POST',
+        headers: {
+          Authorization: `Bearer ${apiKey}`,
+        },
+        body: formData,
+      });
+
+      if (!uploadResponse.ok) {
+        const errorData = await uploadResponse.json().catch(() => ({ error: 'Unknown error' }));
+        res.status(uploadResponse.status).json(errorData);
+        return;
+      }
+
+      const fileData = await uploadResponse.json();
+      const uploadedFileId = fileData['id'] as string;
+      fileMetaCache.set(uploadedFileId, { filename: file.originalname, bytes: file.size });
+
+      const attachResponse = await fetch(`https://api.openai.com/v1/vector_stores/${req.params['id']}/files`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          Authorization: `Bearer ${apiKey}`,
+          ...openAIAssistantsBetaHeaders,
+        },
+        body: JSON.stringify({
+          file_id: uploadedFileId,
+        }),
+      });
+
+      if (!attachResponse.ok) {
+        const errorData = await attachResponse.json().catch(() => ({ error: 'Unknown error' }));
+        res.status(attachResponse.status).json(errorData);
+        return;
+      }
+
+      const attachData = await attachResponse.json();
+      results.push({
+        ...attachData,
+        filename: file.originalname,
+        bytes: file.size,
+      });
     }
 
-    const fileData = await uploadResponse.json();
-
-    const attachResponse = await fetch(`https://api.openai.com/v1/vector_stores/${req.params['id']}/files`, {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-        Authorization: `Bearer ${apiKey}`,
-        ...openAIAssistantsBetaHeaders,
-      },
-      body: JSON.stringify({
-        file_id: fileData['id']
-      })
-    });
-
-    if (!attachResponse.ok) {
-      const errorData = await attachResponse.json().catch(() => ({ error: 'Unknown error' }));
-      res.status(attachResponse.status).json(errorData);
-      return;
-    }
-
-    const attachData = await attachResponse.json();
-    res.json(attachData);
+    res.json({ data: results });
   } catch (error) {
     console.error('Vector store file upload error:', error);
     res.status(500).json({ 

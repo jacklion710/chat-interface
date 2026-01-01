@@ -77,15 +77,17 @@ export class VectorStoresService {
     }
   }
 
-  async uploadFile(storeId: string, file: File): Promise<void> {
+  async uploadFiles(storeId: string, files: File[]): Promise<VectorStoreFile[]> {
     try {
       const formData = new FormData();
-      formData.append('file', file);
-      formData.append('purpose', 'assistants');
+      for (const file of files) {
+        formData.append('files', file);
+      }
 
-      await firstValueFrom(
-        this.http.post(`${this.baseUrl}/${storeId}/files`, formData)
+      const response = await firstValueFrom(
+        this.http.post<{ data: VectorStoreFile[] }>(`${this.baseUrl}/${storeId}/files`, formData)
       );
+      return response.data || [];
     } catch (error: any) {
       console.error('Error uploading file:', error);
       throw new Error(

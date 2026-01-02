@@ -77,5 +77,32 @@ Environment variables:
 - `VECTOR_STORE_S3_REGION`: AWS region for S3 (defaults to `AWS_REGION` / `AWS_DEFAULT_REGION`)
 - `VECTOR_STORE_S3_ROLE_ARN`: optional role to assume via STS before calling S3
 
+## Deploy the web app (ECS Fargate)
+
+This CDK app also deploys the SSR web app as a container behind a public load balancer.
+
+Deploy:
+
+```bash
+npx cdk deploy ChatInterfaceWebAppStack
+```
+
+After the first deploy:
+- Open the CloudFormation outputs for `ChatInterfaceWebAppStack`
+- Copy `WebAppUrl` to access the app
+- Set the OpenAI API key secret value in Secrets Manager using `OpenAIApiKeySecretArn`
+
+Optional: provide an existing OpenAI secret ARN via CDK context (`infra/cdk.json`):
+
+```json
+{
+  "context": {
+    "webApp": {
+      "openaiApiKeySecretArn": "arn:aws:secretsmanager:us-east-1:123456789012:secret:my-openai-key-xxxxxx"
+    }
+  }
+}
+```
+
 
 

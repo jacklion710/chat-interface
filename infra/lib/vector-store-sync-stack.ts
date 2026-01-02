@@ -26,6 +26,11 @@ function readContextConfig(scope: Construct): Required<Pick<ContextConfig, 'vect
 }
 
 export class VectorStoreSyncStack extends cdk.Stack {
+  public readonly vectorStoreBucketName: string;
+  public readonly vectorStoreBucketArn: string;
+  public readonly vectorStorePrefix: string;
+  public readonly vectorStoreS3AccessPolicy: iam.IManagedPolicy;
+
   constructor(scope: Construct, id: string, props?: cdk.StackProps) {
     super(scope, id, props);
 
@@ -88,6 +93,11 @@ export class VectorStoreSyncStack extends cdk.Stack {
     });
 
     appRole.addManagedPolicy(s3AccessPolicy);
+
+    this.vectorStoreBucketName = bucket.bucketName;
+    this.vectorStoreBucketArn = bucket.bucketArn;
+    this.vectorStorePrefix = prefix;
+    this.vectorStoreS3AccessPolicy = s3AccessPolicy;
 
     new cdk.CfnOutput(this, 'VectorStoreBucketName', { value: bucket.bucketName });
     new cdk.CfnOutput(this, 'VectorStoreBucketArn', { value: bucket.bucketArn });

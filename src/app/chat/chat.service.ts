@@ -26,6 +26,20 @@ export interface VectorStoreOption {
   name?: string;
 }
 
+export type AssistantCitation = {
+  fileId: string;
+  vectorStoreId?: string;
+  vectorStoreFileId?: string;
+  filename?: string;
+  bytes?: number;
+  quote?: string;
+};
+
+export type ChatReply = {
+  reply: string;
+  citations: AssistantCitation[];
+};
+
 @Injectable({
   providedIn: 'root'
 })
@@ -58,7 +72,7 @@ export class ChatService {
     return response.data || [];
   }
 
-  async sendMessage(userPrompt: string, messages: Message[]): Promise<string> {
+  async sendMessage(userPrompt: string, messages: Message[]): Promise<ChatReply> {
     const requestBody: OpenAIRequest = {
       model: 'gpt-3.5-turbo',
       messages: messages.map(msg => ({
@@ -71,14 +85,18 @@ export class ChatService {
       const vectorStoreId = this.selectedVectorStoreId;
       if (vectorStoreId) {
         const response = await firstValueFrom(
-          this.http.post<{ reply: string; threadId: string }>(this.assistantsChatUrl, {
+          this.http.post<{
+            reply: string;
+            threadId: string;
+            citations?: Array<{ fileId: string; filename?: string; bytes?: number; quote?: string }>;
+          }>(this.assistantsChatUrl, {
             prompt: userPrompt,
             vectorStoreId,
             threadId: this.threadId,
           }),
         );
         this.threadId = response.threadId;
-        return response.reply;
+        return { reply: response.reply, citations: response.citations ?? [] };
       }
 
       const response = await firstValueFrom(
@@ -90,7 +108,7 @@ export class ChatService {
       );
 
       if (response.choices && response.choices.length > 0) {
-        return response.choices[0].message.content;
+        return { reply: response.choices[0].message.content, citations: [] };
       }
 
       throw new Error('No response from API');

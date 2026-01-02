@@ -99,6 +99,50 @@
             >
               <div class="markdown-content" [innerHTML]="message.content | markdown"></div>
             </div>
+
+            @if (message.role === 'assistant' && message.citations && message.citations.length > 0) {
+              <div class="mt-2 max-w-[85%] text-left">
+                <div class="text-xs font-semibold text-gray-600 dark:text-gray-300 mb-1">Sources</div>
+                <div class="space-y-2">
+                  @for (c of message.citations; track c.fileId + (c.quote || '')) {
+                    <div class="p-2 rounded-lg border border-gray-200 dark:border-gray-700 bg-white/60 dark:bg-gray-800/60">
+                      <div class="flex items-center justify-between gap-3">
+                        <div class="min-w-0">
+                          <div class="text-xs font-medium text-gray-900 dark:text-gray-100 truncate">
+                            {{ c.filename || c.fileId }}
+                          </div>
+                          @if (c.bytes) {
+                            <div class="text-[11px] text-gray-500 dark:text-gray-400">{{ c.bytes }} bytes</div>
+                          }
+                        </div>
+                        <div class="shrink-0 flex gap-2">
+                          <button
+                            type="button"
+                            class="text-xs text-green-700 dark:text-green-400 hover:underline"
+                            (click)="openCitation(c)"
+                          >
+                            Open
+                          </button>
+                          <a
+                            class="text-xs text-gray-600 dark:text-gray-300 hover:underline"
+                            [href]="getCitationDownloadUrl(c)"
+                            target="_blank"
+                            rel="noopener noreferrer"
+                          >
+                            Download
+                          </a>
+                        </div>
+                      </div>
+                      @if (c.quote) {
+                        <div class="mt-2 text-xs text-gray-700 dark:text-gray-200 whitespace-pre-wrap">
+                          “{{ c.quote }}”
+                        </div>
+                      }
+                    </div>
+                  }
+                </div>
+              </div>
+            }
           </div>
         </div>
       }
@@ -131,6 +175,39 @@
       }
     </div>
   </div>
+
+  @if (activeCitation() && activeCitationUrl()) {
+    <div class="fixed inset-0 bg-black/50 flex items-center justify-center p-4 z-50" (click)="closeCitation()">
+      <div class="w-full max-w-5xl h-[80vh] bg-white dark:bg-gray-900 rounded-xl overflow-hidden shadow-xl border border-gray-200 dark:border-gray-700" (click)="$event.stopPropagation()">
+        <div class="flex items-center justify-between px-4 py-3 border-b border-gray-200 dark:border-gray-700">
+          <div class="min-w-0">
+            <div class="text-sm font-semibold text-gray-900 dark:text-white truncate">
+              {{ activeCitation()!.filename || activeCitation()!.fileId }}
+            </div>
+            @if (activeCitation()!.quote) {
+              <div class="text-xs text-gray-600 dark:text-gray-300 truncate">
+                “{{ activeCitation()!.quote }}”
+              </div>
+            }
+          </div>
+          <div class="flex items-center gap-3 shrink-0">
+            <a
+              class="text-sm text-gray-700 dark:text-gray-200 hover:underline"
+              [href]="getCitationDownloadUrl(activeCitation()!)"
+              target="_blank"
+              rel="noopener noreferrer"
+            >
+              Download
+            </a>
+            <button type="button" class="text-sm text-red-600 dark:text-red-400 hover:underline" (click)="closeCitation()">
+              Close
+            </button>
+          </div>
+        </div>
+        <iframe class="w-full h-full bg-white dark:bg-gray-900" [src]="activeCitationUrl()"></iframe>
+      </div>
+    </div>
+  }
 
   <div class="border-t border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-800 px-4 py-4">
     <div class="max-w-3xl mx-auto">

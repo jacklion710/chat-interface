@@ -1,13 +1,15 @@
 import { Component, signal, effect } from '@angular/core';
 import { CommonModule } from '@angular/common';
 import { FormsModule } from '@angular/forms';
-import { ChatService } from './chat.service';
+import { ChatService, AssistantCitation } from './chat.service';
 import { MarkdownPipe } from '../shared/markdown.pipe';
+import { DomSanitizer, SafeResourceUrl } from '@angular/platform-browser';
 
 export interface Message {
   role: 'user' | 'assistant';
   content: string;
   timestamp: Date;
+  citations?: AssistantCitation[];
 }
 
 @Component({
@@ -24,8 +26,10 @@ export class ChatComponent {
   error = signal<string | null>(null);
   vectorStores = signal<Array<{ id: string; name?: string }>>([]);
   selectedVectorStoreId = signal<string>(''); // '' means none
+  activeCitation = signal<AssistantCitation | null>(null);
+  activeCitationUrl = signal<SafeResourceUrl | null>(null);
 
-  constructor(private chatService: ChatService) {
+  constructor(private chatService: ChatService, private sanitizer: DomSanitizer) {
     effect(() => {
       if (this.messages().length === 0) {
         this.scrollToBottom();
@@ -72,8 +76,9 @@ export class ChatComponent {
       
       const assistantMessage: Message = {
         role: 'assistant',
-        content: response,
-        timestamp: new Date()
+        content: response.reply,
+        timestamp: new Date(),
+        citations: response.citations,
       };
 
       this.messages.update(msgs => [...msgs, assistantMessage]);
@@ -114,6 +119,34 @@ export class ChatComponent {
   clearChat() {
     this.messages.set([]);
     this.error.set(null);
+  }
+
+  openCitation(citation: AssistantCitation) {
+    const vectorStoreId = citation.vectorStoreId || this.selectedVectorStoreId();
+    if (!vectorStoreId) {
+      this.error.set('Source streaming is not available for this citation.');
+      return;
+    }
+
+    const fileIdOrVectorStoreFileId = citation.vectorStoreFileId || citation.fileId;
+    const url = `/api/vector-stores/${encodeURIComponent(vectorStoreId)}/files/${encodeURIComponent(fileIdOrVectorStoreFileId)}/content`;
+    this.activeCitation.set(citation);
+    this.activeCitationUrl.set(this.sanitizer.bypassSecurityTrustResourceUrl(url));
+  }
+
+  closeCitation() {
+    this.activeCitation.set(null);
+    this.activeCitationUrl.set(null);
+  }
+
+  getCitationDownloadUrl(citation: AssistantCitation): string {
+    const vectorStoreId = citation.vectorStoreId || this.selectedVectorStoreId();
+    if (!vectorStoreId) {
+      return '#';
+    }
+
+    const fileIdOrVectorStoreFileId = citation.vectorStoreFileId || citation.fileId;
+    return `/api/vector-stores/${encodeURIComponent(vectorStoreId)}/files/${encodeURIComponent(fileIdOrVectorStoreFileId)}/content?download=1`;
   }
 }
 

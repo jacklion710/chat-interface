@@ -9,6 +9,7 @@ import {
   PutObjectCommand,
   ListObjectsV2Command,
   DeleteObjectsCommand,
+  GetObjectCommand,
   ListObjectsV2CommandOutput,
 } from '@aws-sdk/client-s3';
 import { fromTemporaryCredentials } from '@aws-sdk/credential-providers';
@@ -41,6 +42,14 @@ type AssistantChatRequest = {
 type AssistantChatResponse = {
   reply: string;
   threadId: string;
+  citations?: Array<{
+    fileId: string;
+    vectorStoreId?: string;
+    vectorStoreFileId?: string;
+    filename?: string;
+    bytes?: number;
+    quote?: string;
+  }>;
 };
 
 const assistantIdByVectorStoreId = new Map<string, string>();
@@ -243,6 +252,167 @@ function extractAssistantText(message: any): string {
     }
   }
   return parts.join('\n').trim();
+}
+
+async function extractAssistantCitations(apiKey: string, message: any): Promise<AssistantChatResponse['citations']> {
+  const content = message?.content;
+  if (!Array.isArray(content)) {
+    return [];
+  }
+
+  const citations: Array<{ fileId: string; quote?: string }> = [];
+
+  for (const item of content) {
+    if (item?.type !== 'text') {
+      continue;
+    }
+    const annotations = item?.text?.annotations;
+    if (!Array.isArray(annotations)) {
+      continue;
+    }
+
+    for (const ann of annotations) {
+      const type = ann?.type;
+      if (type === 'file_citation' && typeof ann?.file_citation?.file_id === 'string') {
+        const fileId = String(ann.file_citation.file_id);
+        const quote = typeof ann?.file_citation?.quote === 'string' ? ann.file_citation.quote : undefined;
+        citations.push({ fileId, quote });
+        continue;
+      }
+      if (type === 'file_path' && typeof ann?.file_path?.file_id === 'string') {
+        const fileId = String(ann.file_path.file_id);
+        citations.push({ fileId });
+      }
+    }
+  }
+
+  const deduped: Array<{ fileId: string; quote?: string }> = [];
+  const seen = new Set<string>();
+  for (const c of citations) {
+    const key = `${c.fileId}::${c.quote ?? ''}`;
+    if (seen.has(key)) {
+      continue;
+    }
+    seen.add(key);
+    deduped.push(c);
+  }
+
+  const enriched = await Promise.all(
+    deduped.map(async (c) => {
+      const meta = await getFileMeta(apiKey, c.fileId);
+      return {
+        fileId: c.fileId,
+        filename: meta.filename,
+        bytes: meta.bytes,
+        quote: c.quote,
+      };
+    }),
+  );
+
+  return enriched;
+}
+
+type VectorStoreFileMapping = {
+  vectorStoreFileId: string;
+  openaiFileId: string;
+};
+
+const vectorStoreFileIdCache = new Map<
+  string,
+  { createdAtMs: number; byOpenAIFileId: Map<string, string> }
+>();
+
+async function getVectorStoreFileIdByOpenAIFileId(
+  apiKey: string,
+  vectorStoreId: string,
+  openaiFileIds: string[],
+): Promise<Map<string, string>> {
+  const cacheKey = vectorStoreId;
+  const cached = vectorStoreFileIdCache.get(cacheKey);
+  const ttlMs = 60_000;
+
+  if (cached && Date.now() - cached.createdAtMs < ttlMs) {
+    return cached.byOpenAIFileId;
+  }
+
+  const byOpenAIFileId = new Map<string, string>();
+  let after: string | undefined = undefined;
+
+  while (true) {
+    const url = new URL(`https://api.openai.com/v1/vector_stores/${encodeURIComponent(vectorStoreId)}/files`);
+    url.searchParams.set('limit', '100');
+    if (after) {
+      url.searchParams.set('after', after);
+    }
+
+    const response = await fetch(url.toString(), {
+      method: 'GET',
+      headers: {
+        Authorization: `Bearer ${apiKey}`,
+        ...openAIAssistantsBetaHeaders,
+      },
+    });
+
+    if (!response.ok) {
+      const errorData = await response.json().catch(() => ({ error: 'Unknown error' }));
+      throw new Error(`Failed to list vector store files for mapping: ${JSON.stringify(errorData)}`);
+    }
+
+    const data = (await response.json()) as {
+      data?: Array<{ id?: string; file_id?: string }>;
+      has_more?: boolean;
+    };
+
+    const items = Array.isArray(data?.data) ? data.data : [];
+    for (const item of items) {
+      const vectorStoreFileId = typeof item?.id === 'string' ? item.id : '';
+      const openaiFileIdFromField = typeof item?.file_id === 'string' ? item.file_id : '';
+      const openaiFileId =
+        openaiFileIdFromField || (vectorStoreFileId.startsWith('file-') ? vectorStoreFileId : '');
+
+      if (vectorStoreFileId && openaiFileId) {
+        byOpenAIFileId.set(openaiFileId, vectorStoreFileId);
+
+        // Some responses use the same identifier in multiple places; map the vector store file id too
+        // so callers can pass either form.
+        if (vectorStoreFileId.startsWith('file-')) {
+          byOpenAIFileId.set(vectorStoreFileId, vectorStoreFileId);
+        }
+      }
+    }
+
+    if (!data?.has_more || items.length === 0) {
+      break;
+    }
+
+    const lastId = typeof items[items.length - 1]?.id === 'string' ? items[items.length - 1]!.id : '';
+    if (!lastId) {
+      break;
+    }
+    after = lastId;
+  }
+
+  vectorStoreFileIdCache.set(cacheKey, { createdAtMs: Date.now(), byOpenAIFileId });
+  return byOpenAIFileId;
+}
+
+async function extractAssistantCitationsForVectorStore(
+  apiKey: string,
+  vectorStoreId: string,
+  message: any,
+): Promise<AssistantChatResponse['citations']> {
+  const citations = await extractAssistantCitations(apiKey, message);
+  const fileIds = (citations ?? []).map((c) => c.fileId).filter((id) => typeof id === 'string' && id.length > 0);
+  if (fileIds.length === 0) {
+    return citations;
+  }
+
+  const map = await getVectorStoreFileIdByOpenAIFileId(apiKey, vectorStoreId, fileIds);
+  return (citations ?? []).map((c) => ({
+    ...c,
+    vectorStoreId,
+    vectorStoreFileId: map.get(c.fileId),
+  }));
 }
 
 function bufferToArrayBuffer(buffer: Buffer): ArrayBuffer {
@@ -466,7 +636,8 @@ app.post('/api/assistants/chat', async (req, res) => {
       return;
     }
 
-    const responseBody: AssistantChatResponse = { reply, threadId };
+    const citations = await extractAssistantCitationsForVectorStore(apiKey, vectorStoreId, assistantMessage);
+    const responseBody: AssistantChatResponse = { reply, threadId, citations };
     res.json(responseBody);
   } catch (error) {
     console.error('Assistants chat error:', error);
@@ -475,6 +646,128 @@ app.post('/api/assistants/chat', async (req, res) => {
     });
   }
 });
+
+app.get('/api/vector-stores/:id/files/:fileId/content', async (req, res) => {
+  try {
+    const apiKey = process.env['OPENAI_API_KEY'];
+    const s3Config = getVectorStoreS3ConfigFromEnv();
+
+    if (!s3Config) {
+      res.status(500).json({ error: 'S3 mirroring is not configured' });
+      return;
+    }
+
+    const vectorStoreId = typeof req.params['id'] === 'string' ? req.params['id'].trim() : '';
+    const fileIdOrVectorStoreFileId = typeof req.params['fileId'] === 'string' ? req.params['fileId'].trim() : '';
+    if (!vectorStoreId || !fileIdOrVectorStoreFileId) {
+      res.status(400).json({ error: 'Missing vectorStoreId or vectorStoreFileId' });
+      return;
+    }
+
+    const download = (req.query['download'] ?? '') === '1';
+
+    let vectorStoreFileId = fileIdOrVectorStoreFileId;
+    if (fileIdOrVectorStoreFileId.startsWith('file-')) {
+      if (!apiKey) {
+        res.status(500).json({ error: 'OpenAI API key not configured' });
+        return;
+      }
+      const map = await getVectorStoreFileIdByOpenAIFileId(apiKey, vectorStoreId, [fileIdOrVectorStoreFileId]);
+      const resolved = map.get(fileIdOrVectorStoreFileId) ?? '';
+      if (resolved) {
+        vectorStoreFileId = resolved;
+      }
+    }
+
+    const primaryPrefix = buildVectorStoreFilePrefix(s3Config, vectorStoreId, vectorStoreFileId);
+    const fallbackPrefix =
+      vectorStoreFileId === fileIdOrVectorStoreFileId
+        ? null
+        : buildVectorStoreFilePrefix(s3Config, vectorStoreId, fileIdOrVectorStoreFileId);
+    const s3 = getVectorStoreS3Client(s3Config);
+
+    async function findFirstObjectKey(prefix: string): Promise<string> {
+      const list = await s3.send(
+        new ListObjectsV2Command({
+          Bucket: s3Config.bucketName,
+          Prefix: prefix,
+          MaxKeys: 10,
+        }),
+      );
+
+      return (
+        (list.Contents ?? [])
+          .map((c: { Key?: string }) => c.Key)
+          .filter((k: string | undefined): k is string => typeof k === 'string' && k.length > 0)
+          .find((k) => !k.endsWith('/')) ?? ''
+      );
+    }
+
+    let objectKey = await findFirstObjectKey(primaryPrefix);
+    if (!objectKey && fallbackPrefix) {
+      objectKey = await findFirstObjectKey(fallbackPrefix);
+    }
+
+    if (!objectKey) {
+      res.status(404).json({ error: 'Source not found in S3 mirror for this vector store file' });
+      return;
+    }
+
+    const rangeHeader = typeof req.headers.range === 'string' ? req.headers.range : undefined;
+    const upstream = await s3.send(
+      new GetObjectCommand({
+        Bucket: s3Config.bucketName,
+        Key: objectKey,
+        Range: rangeHeader,
+      }),
+    );
+
+    if (upstream.ContentType) {
+      res.setHeader('Content-Type', upstream.ContentType);
+    } else {
+      res.setHeader('Content-Type', 'application/octet-stream');
+    }
+
+    if (upstream.ContentLength !== undefined) {
+      res.setHeader('Content-Length', String(upstream.ContentLength));
+    }
+    if (upstream.AcceptRanges) {
+      res.setHeader('Accept-Ranges', upstream.AcceptRanges);
+    }
+    if (upstream.ContentRange) {
+      res.status(206);
+      res.setHeader('Content-Range', upstream.ContentRange);
+    }
+
+    const filenameFromKey = objectKey.split('/').pop() || 'source';
+    res.setHeader(
+      'Content-Disposition',
+      `${download ? 'attachment' : 'inline'}; filename="${sanitizeS3KeyComponent(filenameFromKey) || 'source'}"`,
+    );
+
+    const body = upstream.Body as any;
+    if (!body) {
+      res.status(500).json({ error: 'S3 content missing' });
+      return;
+    }
+
+    // In AWS SDK v3 on Node, Body is usually a Node stream.
+    body.pipe(res);
+  } catch (error) {
+    console.error('Vector store file content proxy error:', error);
+    res.status(500).json({
+      error: error instanceof Error ? error.message : 'Internal server error',
+    });
+  }
+});
+
+app.get('/api/openai/files/:fileId/content', async (req, res) => {
+  res.status(400).json({
+    error:
+      'Direct OpenAI file download is not supported for assistants files. Use /api/vector-stores/:id/files/:fileId/content with vector_store_file_id instead.',
+  });
+});
+
 
 app.get('/api/vector-stores', async (req, res) => {
   try {

@@ -656,6 +656,7 @@ app.get('/api/vector-stores/:id/files/:fileId/content', async (req, res) => {
       res.status(500).json({ error: 'S3 mirroring is not configured' });
       return;
     }
+    const config = s3Config;
 
     const vectorStoreId = typeof req.params['id'] === 'string' ? req.params['id'].trim() : '';
     const fileIdOrVectorStoreFileId = typeof req.params['fileId'] === 'string' ? req.params['fileId'].trim() : '';
@@ -679,17 +680,17 @@ app.get('/api/vector-stores/:id/files/:fileId/content', async (req, res) => {
       }
     }
 
-    const primaryPrefix = buildVectorStoreFilePrefix(s3Config, vectorStoreId, vectorStoreFileId);
+    const primaryPrefix = buildVectorStoreFilePrefix(config, vectorStoreId, vectorStoreFileId);
     const fallbackPrefix =
       vectorStoreFileId === fileIdOrVectorStoreFileId
         ? null
-        : buildVectorStoreFilePrefix(s3Config, vectorStoreId, fileIdOrVectorStoreFileId);
-    const s3 = getVectorStoreS3Client(s3Config);
+        : buildVectorStoreFilePrefix(config, vectorStoreId, fileIdOrVectorStoreFileId);
+    const s3 = getVectorStoreS3Client(config);
 
     async function findFirstObjectKey(prefix: string): Promise<string> {
       const list = await s3.send(
         new ListObjectsV2Command({
-          Bucket: s3Config.bucketName,
+          Bucket: config.bucketName,
           Prefix: prefix,
           MaxKeys: 10,
         }),
@@ -716,7 +717,7 @@ app.get('/api/vector-stores/:id/files/:fileId/content', async (req, res) => {
     const rangeHeader = typeof req.headers.range === 'string' ? req.headers.range : undefined;
     const upstream = await s3.send(
       new GetObjectCommand({
-        Bucket: s3Config.bucketName,
+        Bucket: config.bucketName,
         Key: objectKey,
         Range: rangeHeader,
       }),

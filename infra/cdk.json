@@ -1,7 +1,13 @@
 {
   "app": "npx ts-node --project tsconfig.json bin/chat-interface-infra.ts",
   "context": {
-    "@aws-cdk/core:checkSecretUsage": true
+    "@aws-cdk/core:checkSecretUsage": true,
+    "githubOidc": {
+      "owner": "jacklion710",
+      "repo": "chat-interface",
+      "branch": "main",
+      "roleName": "ChatInterfaceGitHubDeployRole"
+    }
   }
 }
 

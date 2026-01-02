@@ -104,5 +104,82 @@ Optional: provide an existing OpenAI secret ARN via CDK context (`infra/cdk.json
 }
 ```
 
+## CI/CD (GitHub Actions)
+
+This repo includes a GitHub Actions workflow at `.github/workflows/deploy.yml` that deploys:
+- `ChatInterfaceVectorStoreSyncStack`
+- `ChatInterfaceWebAppStack`
+
+It uses AWS OIDC (recommended) so you do not store long-lived AWS access keys in GitHub.
+
+### One-time AWS setup (OIDC deploy role)
+
+Create an IAM role that GitHub Actions can assume, and attach permissions sufficient for CDK deployments
+(CloudFormation, ECR, ECS, EC2, IAM, S3, Logs, Secrets Manager, etc.).
+
+You can name it something like `ChatInterfaceGitHubDeployRole`.
+
+The role must trust GitHub's OIDC provider and restrict to your repo/branch. Example trust policy (edit owner/repo):
+
+```json
+{
+  "Version": "2012-10-17",
+  "Statement": [
+    {
+      "Effect": "Allow",
+      "Principal": {
+        "Federated": "arn:aws:iam::YOUR_ACCOUNT_ID:oidc-provider/token.actions.githubusercontent.com"
+      },
+      "Action": "sts:AssumeRoleWithWebIdentity",
+      "Condition": {
+        "StringEquals": {
+          "token.actions.githubusercontent.com:aud": "sts.amazonaws.com"
+        },
+        "StringLike": {
+          "token.actions.githubusercontent.com:sub": "repo:YOUR_GITHUB_OWNER/YOUR_REPO:ref:refs/heads/main"
+        }
+      }
+    }
+  ]
+}
+```
+
+### One-time GitHub setup
+
+In your GitHub repo:
+- Settings → Actions → General → Workflow permissions: allow read access (default is fine)
+- Settings → Secrets and variables → Actions → create a repository secret:
+  - `AWS_DEPLOY_ROLE_ARN`: the IAM role ARN that GitHub Actions will assume
+
+### Alternative: create the OIDC role with CDK
+
+This repo also includes `ChatInterfaceGitHubOidcStack` which provisions:
+- GitHub OIDC provider
+- A deploy role scoped to your repo + branch
+
+Set CDK context in `infra/cdk.json`:
+
+```json
+{
+  "context": {
+    "githubOidc": {
+      "owner": "YOUR_GITHUB_OWNER",
+      "repo": "YOUR_REPO",
+      "branch": "main",
+      "roleName": "ChatInterfaceGitHubDeployRole"
+    }
+  }
+}
+```
+
+Deploy it:
+
+```bash
+npx cdk deploy ChatInterfaceGitHubOidcStack
+```
+
+Then copy the `GitHubDeployRoleArn` output into the GitHub secret `AWS_DEPLOY_ROLE_ARN`.
+
+
 
 

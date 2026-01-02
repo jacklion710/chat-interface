@@ -1,0 +1,26 @@
+{
+  "name": "chat-interface-infra",
+  "version": "0.1.0",
+  "private": true,
+  "type": "commonjs",
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "watch": "tsc -w -p tsconfig.json",
+    "cdk": "cdk",
+    "synth": "cdk synth",
+    "diff": "cdk diff",
+    "deploy": "cdk deploy",
+    "destroy": "cdk destroy"
+  },
+  "dependencies": {
+    "aws-cdk-lib": "2.178.0",
+    "constructs": "10.4.2"
+  },
+  "devDependencies": {
+    "@types/node": "20.17.19",
+    "ts-node": "10.9.2",
+    "typescript": "5.9.2"
+  }
+}
+
+

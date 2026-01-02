@@ -41,12 +41,14 @@ jobs:
         run: npm ci
 
       - name: Install infra dependencies
-        run: npm ci --prefix infra
+        run: npm install --prefix infra
 
       - name: CDK synth
-        run: npx --prefix infra cdk synth
+        working-directory: infra
+        run: npx cdk synth
 
       - name: CDK deploy
-        run: npx --prefix infra cdk deploy ChatInterfaceVectorStoreSyncStack ChatInterfaceWebAppStack --require-approval never
+        working-directory: infra
+        run: npx cdk deploy ChatInterfaceVectorStoreSyncStack ChatInterfaceWebAppStack --require-approval never
 
 

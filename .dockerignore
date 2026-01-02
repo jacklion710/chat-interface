@@ -1,0 +1,11 @@
+node_modules
+dist
+.angular
+coverage
+tmp
+.DS_Store
+.env
+infra
+README.md
+
+

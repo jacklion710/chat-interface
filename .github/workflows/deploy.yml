@@ -1,0 +1,52 @@
+name: Deploy (CDK)
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch: {}
+
+concurrency:
+  group: deploy-main
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+  id-token: write
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    env:
+      AWS_REGION: us-east-1
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+          cache-dependency-path: |
+            package-lock.json
+            infra/package-lock.json
+
+      - name: Configure AWS credentials (OIDC)
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ secrets.AWS_DEPLOY_ROLE_ARN }}
+          aws-region: ${{ env.AWS_REGION }}
+
+      - name: Install root dependencies
+        run: npm ci
+
+      - name: Install infra dependencies
+        run: npm ci --prefix infra
+
+      - name: CDK synth
+        run: npx --prefix infra cdk synth
+
+      - name: CDK deploy
+        run: npx --prefix infra cdk deploy ChatInterfaceVectorStoreSyncStack ChatInterfaceWebAppStack --require-approval never
+
+

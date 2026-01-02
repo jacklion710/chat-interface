@@ -4,6 +4,14 @@ import {
   isMainModule,
   writeResponseToNodeResponse,
 } from '@angular/ssr/node';
+import {
+  S3Client,
+  PutObjectCommand,
+  ListObjectsV2Command,
+  DeleteObjectsCommand,
+  ListObjectsV2CommandOutput,
+} from '@aws-sdk/client-s3';
+import { fromTemporaryCredentials } from '@aws-sdk/credential-providers';
 import express from 'express';
 import { join } from 'node:path';
 import dotenv from 'dotenv';
@@ -36,6 +44,151 @@ type AssistantChatResponse = {
 };
 
 const assistantIdByVectorStoreId = new Map<string, string>();
+
+type VectorStoreS3Config = {
+  bucketName: string;
+  prefix: string;
+  region: string;
+  roleArn?: string;
+};
+
+function getVectorStoreS3ConfigFromEnv(): VectorStoreS3Config | null {
+  const bucketName = (process.env['VECTOR_STORE_S3_BUCKET'] ?? '').trim();
+  if (!bucketName) {
+    return null;
+  }
+
+  const region =
+    (process.env['VECTOR_STORE_S3_REGION'] ?? process.env['AWS_REGION'] ?? process.env['AWS_DEFAULT_REGION'] ?? '')
+      .trim();
+
+  if (!region) {
+    throw new Error('VECTOR_STORE_S3_BUCKET is set but no region was provided (set VECTOR_STORE_S3_REGION or AWS_REGION).');
+  }
+
+  const rawPrefix = (process.env['VECTOR_STORE_S3_PREFIX'] ?? 'vector-stores/').trim();
+  const prefix = rawPrefix.endsWith('/') ? rawPrefix : `${rawPrefix}/`;
+  const roleArn = (process.env['VECTOR_STORE_S3_ROLE_ARN'] ?? '').trim() || undefined;
+
+  return { bucketName, prefix, region, roleArn };
+}
+
+let cachedVectorStoreS3Client: S3Client | null = null;
+let cachedVectorStoreS3ClientKey: string | null = null;
+
+function getVectorStoreS3Client(config: VectorStoreS3Config): S3Client {
+  const key = JSON.stringify({ region: config.region, roleArn: config.roleArn ?? '' });
+  if (cachedVectorStoreS3Client && cachedVectorStoreS3ClientKey === key) {
+    return cachedVectorStoreS3Client;
+  }
+
+  const credentials = config.roleArn
+    ? fromTemporaryCredentials({
+        params: {
+          RoleArn: config.roleArn,
+          RoleSessionName: 'chat-interface-vector-store-sync',
+        },
+        clientConfig: { region: config.region },
+      })
+    : undefined;
+
+  cachedVectorStoreS3Client = new S3Client({
+    region: config.region,
+    credentials,
+  });
+  cachedVectorStoreS3ClientKey = key;
+  return cachedVectorStoreS3Client;
+}
+
+function sanitizeS3KeyComponent(value: string): string {
+  return value
+    .replaceAll('\\', '_')
+    .replaceAll('/', '_')
+    .replaceAll('\0', '')
+    .trim();
+}
+
+function buildVectorStoreRootPrefix(config: VectorStoreS3Config, vectorStoreId: string): string {
+  return `${config.prefix}${sanitizeS3KeyComponent(vectorStoreId)}/`;
+}
+
+function buildVectorStoreFilePrefix(
+  config: VectorStoreS3Config,
+  vectorStoreId: string,
+  vectorStoreFileId: string,
+): string {
+  return `${buildVectorStoreRootPrefix(config, vectorStoreId)}files/${sanitizeS3KeyComponent(vectorStoreFileId)}/`;
+}
+
+async function ensureVectorStoreFolderExists(config: VectorStoreS3Config, vectorStoreId: string): Promise<void> {
+  const s3 = getVectorStoreS3Client(config);
+  const folderKey = buildVectorStoreRootPrefix(config, vectorStoreId);
+  await s3.send(
+    new PutObjectCommand({
+      Bucket: config.bucketName,
+      Key: folderKey,
+      Body: '',
+      ContentType: 'application/x-directory',
+    }),
+  );
+}
+
+async function putVectorStoreMetadata(
+  config: VectorStoreS3Config,
+  vectorStoreId: string,
+  metadata: { id: string; name?: string; updatedAt: string },
+): Promise<void> {
+  const s3 = getVectorStoreS3Client(config);
+  const key = `${buildVectorStoreRootPrefix(config, vectorStoreId)}store.json`;
+  await s3.send(
+    new PutObjectCommand({
+      Bucket: config.bucketName,
+      Key: key,
+      Body: JSON.stringify(metadata, null, 2),
+      ContentType: 'application/json',
+    }),
+  );
+}
+
+async function deleteAllObjectsUnderPrefix(config: VectorStoreS3Config, prefix: string): Promise<void> {
+  const s3 = getVectorStoreS3Client(config);
+  let continuationToken: string | undefined = undefined;
+
+  while (true) {
+    const list: ListObjectsV2CommandOutput = await s3.send(
+      new ListObjectsV2Command({
+        Bucket: config.bucketName,
+        Prefix: prefix,
+        ContinuationToken: continuationToken,
+        MaxKeys: 1000,
+      }),
+    );
+
+    const keys = (list.Contents ?? [])
+      .map((c: { Key?: string }) => c.Key)
+      .filter((k: string | undefined): k is string => typeof k === 'string' && k.length > 0);
+
+    if (keys.length > 0) {
+      await s3.send(
+        new DeleteObjectsCommand({
+          Bucket: config.bucketName,
+          Delete: {
+            Objects: keys.map((Key: string) => ({ Key })),
+            Quiet: true,
+          },
+        }),
+      );
+    }
+
+    if (!list.IsTruncated) {
+      return;
+    }
+    continuationToken = list.NextContinuationToken;
+    if (!continuationToken) {
+      return;
+    }
+  }
+}
 
 function sleepMs(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms));
@@ -384,6 +537,15 @@ app.post('/api/vector-stores', async (req, res) => {
     }
 
     const data = await response.json();
+    const s3Config = getVectorStoreS3ConfigFromEnv();
+    if (s3Config && typeof data?.id === 'string') {
+      await ensureVectorStoreFolderExists(s3Config, data.id);
+      await putVectorStoreMetadata(s3Config, data.id, {
+        id: data.id,
+        name: typeof data?.name === 'string' ? data.name : undefined,
+        updatedAt: new Date().toISOString(),
+      });
+    }
     res.json(data);
   } catch (error) {
     console.error('Vector store create error:', error);
@@ -425,6 +587,15 @@ app.patch('/api/vector-stores/:id', async (req, res) => {
     }
 
     const data = await response.json();
+    const s3Config = getVectorStoreS3ConfigFromEnv();
+    if (s3Config) {
+      await ensureVectorStoreFolderExists(s3Config, req.params['id']);
+      await putVectorStoreMetadata(s3Config, req.params['id'], {
+        id: req.params['id'],
+        name: typeof data?.name === 'string' ? data.name : newName,
+        updatedAt: new Date().toISOString(),
+      });
+    }
     res.json(data);
   } catch (error) {
     console.error('Vector store rename error:', error);
@@ -458,6 +629,11 @@ app.delete('/api/vector-stores/:id', async (req, res) => {
     }
 
     const data = await response.json();
+    const s3Config = getVectorStoreS3ConfigFromEnv();
+    if (s3Config) {
+      const storePrefix = buildVectorStoreRootPrefix(s3Config, req.params['id']);
+      await deleteAllObjectsUnderPrefix(s3Config, storePrefix);
+    }
     res.json(data);
   } catch (error) {
     console.error('Vector store delete error:', error);
@@ -538,6 +714,10 @@ app.post('/api/vector-stores/:id/files', upload.array('files'), async (req, res)
     }
 
     const results: Array<Record<string, unknown>> = [];
+    const s3Config = getVectorStoreS3ConfigFromEnv();
+    if (s3Config) {
+      await ensureVectorStoreFolderExists(s3Config, req.params['id']);
+    }
 
     for (const file of files) {
       const formData = new FormData();
@@ -583,6 +763,29 @@ app.post('/api/vector-stores/:id/files', upload.array('files'), async (req, res)
       }
 
       const attachData = await attachResponse.json();
+
+      if (s3Config && typeof attachData?.id === 'string') {
+        const vectorStoreFileId = attachData.id as string;
+        const filename = sanitizeS3KeyComponent(file.originalname) || 'file';
+        const objectKey = `${buildVectorStoreFilePrefix(s3Config, req.params['id'], vectorStoreFileId)}${filename}`;
+
+        const s3 = getVectorStoreS3Client(s3Config);
+        await s3.send(
+          new PutObjectCommand({
+            Bucket: s3Config.bucketName,
+            Key: objectKey,
+            Body: file.buffer,
+            ContentType: file.mimetype || 'application/octet-stream',
+            Metadata: {
+              vector_store_id: req.params['id'],
+              vector_store_file_id: vectorStoreFileId,
+              openai_file_id: typeof attachData?.file_id === 'string' ? attachData.file_id : uploadedFileId,
+              original_filename: file.originalname,
+            },
+          }),
+        );
+      }
+
       results.push({
         ...attachData,
         filename: file.originalname,
@@ -623,6 +826,11 @@ app.delete('/api/vector-stores/:id/files/:fileId', async (req, res) => {
     }
 
     const data = await response.json();
+    const s3Config = getVectorStoreS3ConfigFromEnv();
+    if (s3Config) {
+      const filePrefix = buildVectorStoreFilePrefix(s3Config, req.params['id'], req.params['fileId']);
+      await deleteAllObjectsUnderPrefix(s3Config, filePrefix);
+    }
     res.json(data);
   } catch (error) {
     console.error('Vector store file delete error:', error);

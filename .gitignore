@@ -8,6 +8,7 @@
 
 # Node
 /node_modules
+infra/node_modules
 npm-debug.log
 yarn-error.log
 
@@ -37,6 +38,8 @@ yarn-error.log
 testem.log
 /typings
 __screenshots__/
+infra/cdk.out
+infra/dist
 
 # System files
 .DS_Store

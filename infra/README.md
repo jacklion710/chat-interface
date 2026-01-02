@@ -67,4 +67,15 @@ Outputs include:
 - Prefix
 - IAM role ARN your app should assume to access S3
 
+## App configuration for S3 mirroring
+
+The Node server can optionally mirror vector store operations to S3.
+
+Environment variables:
+- `VECTOR_STORE_S3_BUCKET`: S3 bucket name (required to enable mirroring)
+- `VECTOR_STORE_S3_PREFIX`: key prefix (defaults to `vector-stores/`)
+- `VECTOR_STORE_S3_REGION`: AWS region for S3 (defaults to `AWS_REGION` / `AWS_DEFAULT_REGION`)
+- `VECTOR_STORE_S3_ROLE_ARN`: optional role to assume via STS before calling S3
+
+
 
